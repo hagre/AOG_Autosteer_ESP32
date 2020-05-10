@@ -106,7 +106,6 @@ void getDataFromAOG()
 		gpsSpeed = float(DataFromAOG[3]) / 4;  //actual speed times 4, single byte
 
 		//distance from the guidance line in mm
-		olddist = distanceFromLine;
 		idistanceFromLine = (DataFromAOG[4] << 8 | DataFromAOG[5]);   //high,low bytes     
 		distanceFromLine = (float)idistanceFromLine;
 

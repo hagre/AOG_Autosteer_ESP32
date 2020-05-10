@@ -10,6 +10,7 @@
 
 
 
+
 #define useLED_BUILTIN  1	          // some ESP board have a build in LED, some not
 
 #define HardwarePlatform  0         //0 = runs on ESP32 1 = run on NANO 33 IoT (not working yet!!)
@@ -20,7 +21,7 @@ struct Storage {
 	char password[24] = "";           // WiFi network password
 	uint16_t timeoutRouter = 100;     // Time (seconds) to wait for WIFI access, after that own Access Point starts
 
-	uint8_t aogVersion = 17;	  // Version number for version check 4.2.01 = 4+2+1 = 7	
+	uint8_t aogVersion = 17;			  // Version number for version check 4.3.10 = 4+3+10 = 17	
 
 	uint8_t DataTransVia = 1;         //transfer data via 0: USB, 1: WiFi, 4: USB 10 byte format for AOG V4
 
@@ -45,9 +46,10 @@ struct Storage {
 	uint8_t UseMMA_X_Axis = 1;		  // 1: use X axis (default) 0: use Y axis
 
 	uint8_t InvertRoll = 1;           // 0: no, set to 1 to change roll direction
-	byte roll_MAX_STEP = 20;
 
-	uint8_t Invert_WAS = 0;              // set to 1 to Change Direction of Wheel Angle Sensor - to + 
+	uint8_t roll_MAX_STEP = 10;		  // max roll step per loop (5-20) higher = filter less
+
+	uint8_t Invert_WAS = 0;           // set to 1 to Change Direction of Wheel Angle Sensor - to + 
 
 	uint8_t ShaftEncoder = 0;         // Steering Wheel ENCODER Installed
 	uint8_t pulseCountMax = 3;        // Switch off Autosteer after x Pulses from Steering wheel encoder 
@@ -67,9 +69,9 @@ struct Storage {
 
 	uint8_t autoSteerMinSpeed4 = 2;    //AOG sends speed * 4 as byte so lowest is 1 = 0.25 km/h 2=0.5 3=0.75 4=1 km/h
 
-	uint8_t autosteerMaxSpeed4 = 255;	// set to 255 to be able to drive backwards
+	uint8_t autosteerMaxSpeed4 = 120;  //Max speed to use autosteer x4
 
-	uint16_t WorkSW_Threshold = 1500; // Value for analog hitch level to switch workswitch  (0-4096)
+	uint16_t WorkSW_Threshold = 1600;  // Value for analog hitch level to switch workswitch  (0-4096)
 
 	
 	// IO pins --------------------------------
@@ -117,15 +119,15 @@ struct Storage {
 
 	//filter variables set by AOG via PGN settings sentence, stored automatically in EEPROM for faster start
 	float Ko = 0.05f;   //overall gain  
-	float Kp = 5.0f;    //proportional gain  
+	float Kp = 20.0f;    //proportional gain  
 	float Ki = 0.001f;  //integral gain
 	float Kd = 1.0f;    //derivative gain 
 	float steeringPositionZero = 12540;  uint8_t minPWMValue = 30;
 	uint16_t maxIntegralValue = 20; //max PWM value for integral PID component
 	float steerSensorCounts = 100;  uint16_t roll_corr = 200;
 	float deadZone = 0.0f;  //band of no action
-	byte minPWM = 30;
-	byte maxPWM = 100;//max PWM value
+	byte minPWM = 40;
+	byte maxPWM = 150;//max PWM value
 	
 	
 	boolean debugmode = false;
@@ -144,16 +146,16 @@ boolean EEPROM_clear = false;  //set to true when changing settings to write the
 #if HardwarePlatform == 0
 #include "EEPROM.h"
 #endif
-//#include <ESPmDNS.h>//OTA
-//#include <Update.h>
+#include <Update.h>
 #include "Wire.h"
 #include "BNO055_AOG.h"
 #include "zADS1015.h"
 #include "MMA8452_AOG.h"  //MMA inclinometer
 #include <WiFiUdp.h>
-#include <WiFiServer.h>
+#include <WebServer.h>
 #include <WiFiClient.h>
 #include <WiFi.h>
+
 
 #define A 0X28             //I2C address selection pin LOW BNO055
 #define B 0x29             //                          HIGH
@@ -164,10 +166,10 @@ Adafruit_ADS1115 ads;     // Use this for the 16-bit version ADS1115
 MMA8452 MMA1D(0x1D);
 MMA8452 MMA1C(0x1C);
 BNO055 IMU(A);
-WiFiServer server(80);
-WiFiClient client_page;
+//WiFiClient client_page;
 WiFiUDP UDPFromAOG;
 WiFiUDP UDPToAOG;
+WebServer server(80);
 
 // Variables ------------------------------
 byte my_WiFi_Mode = 0;  // WIFI_STA = 1 = Workstation  WIFI_AP = 2  = Accesspoint
@@ -192,13 +194,12 @@ const float varRoll = 0.1; // variance,
 const float varProcess = 0.001; //0,00025 smaller is more filtering
 
 //program flow
-//bool webupdate = false;
 bool isDataFound = false, isSettingFound = false, isArdConfigFound = false, isMachineFound = false, steerSettingChanged = false;
 bool MMAinitialized = false;
 int AnalogValue = 0;
 bool steerEnable = false, toggleSteerEnable = false, SteerButtonPressed = false, steerEnableOld = false, remoteSwitchPressed = false;
 byte relay = 0, relayHi = 0,uTurn = 0, workSwitch = 0, workSwitchOld = 0, steerSwitch = 1, switchByte = 0, remoteSwitch = 0;
-float gpsSpeed = 0, distanceFromLine = 0, olddist = 0; // not used, corr = 0 
+float gpsSpeed = 0, distanceFromLine = 0; 
 int16_t idistanceFromLine = 0;
 //steering variables
 float steerAngleActual = 0;
@@ -207,10 +208,8 @@ int16_t isteerAngleSetPoint = 0; //the desired angle from AgOpen
 float steerAngleSetPoint = 0;
 long steeringPosition = 0,  actualSteerPos = 0; //from steering sensor steeringPosition_corr = 0,
 float steerAngleError = 0; //setpoint - actual
-//float distanceError = 0; //
 int  pulseCount = 0, prevEncAState = 0, prevEncBState = 0; // Steering Wheel Encoder
 bool encDebounce = false; // Steering Wheel Encoder
-float corr = 0;
 
 //IMU, inclinometer variables
 bool imu_initialized = 0;
@@ -223,7 +222,6 @@ int pwmDrive = 0, drive = 0, pwmDisplay = 0, pwmOut = 0, errorAbs = 0, highLowPe
 float pValue = 0;// iValue = 0, dValue = 0;
 
 //integral values - **** change as required *****
-int maxIntErr = 200; //anti windup max
 int maxIntegralValue = 20; //max PWM value for integral PID component 
 
 //Array to send data back to AgOpenGPS
@@ -231,7 +229,8 @@ byte toSend[] = { 0,0,0,0,0,0,0,0,0,0 };
 //data that will be received from server
 uint8_t DataFromAOG[10];
 
-
+//webpage
+long argVal = 0;
 
 
 
@@ -269,8 +268,10 @@ void setup() {
 	delay(500);
 	UDP_Start();  // start the UDP Client
 	delay(200);
-	//start server for settings homepage
-	server.begin();
+
+	//start server for settings homepage	
+	StartServer();
+
 	delay(200);
 	Serial.print("Debugmode "); if (steerSet.debugmode) { Serial.println("ON"); }
 	else { Serial.println("OFF"); }
@@ -279,6 +280,7 @@ void setup() {
 		if (steerSet.DataTransVia == 4) { Serial.println("data transfer via USB 10 Byte sentence AOG V4"); }
 		else { Serial.println("data transfer via UDP"); }
 	}
+
 
 }
 
@@ -290,7 +292,7 @@ void loop() {
 	//runs allways (not in timed loop)	
 
 #if HardwarePlatform == 0 //ESP32
-	doWebInterface(); 
+	server.handleClient(); //does the Webinterface
 #endif
 
 	WiFi_LED_blink();
@@ -603,10 +605,7 @@ void loop() {
 		//convert position to steer angle
 		steerAngleActual = (float)(steeringPosition) / steerSet.steerSensorCounts;
 
-		// add the roll
-		//if (steerSet.InclinometerInstalled >= 1) steerAngleActual = steerAngleActual - (XeRoll * (steerSet.Kd / 800));     
-
-//Build Autosteer Packet: Send to agopenGPS **** you must send 10 Byte or 5 Int
+		//Build Autosteer Packet: Send to agopenGPS **** you must send 10 Byte or 5 Int
 		int temp;
 
 		//actual steer angle
